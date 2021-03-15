@@ -60,10 +60,10 @@ Twitter: [@neilpangxa](https://twitter.com/neilpangxa)
 |1|[![MacOS](https://github.com/acmesh-official/acme.sh/workflows/LetsEncrypt/badge.svg)](https://github.com/acmesh-official/acme.sh/actions?query=workflow%3ALetsEncrypt)|Mac OSX
 |2|[![Windows](https://github.com/acmesh-official/acme.sh/workflows/LetsEncrypt/badge.svg)](https://github.com/acmesh-official/acme.sh/actions?query=workflow%3ALetsEncrypt)|Windows (cygwin with curl, openssl and crontab included)
 |3|[![FreeBSD](https://github.com/acmesh-official/acme.sh/workflows/LetsEncrypt/badge.svg)](https://github.com/acmesh-official/acme.sh/actions?query=workflow%3ALetsEncrypt)|FreeBSD
-|4|[![Ubuntu](https://github.com/acmesh-official/acme.sh/workflows/LetsEncrypt/badge.svg)](https://github.com/acmesh-official/acme.sh/actions?query=workflow%3ALetsEncrypt)| Ubuntu
-|5|[![](https://acmesh-official.github.io/acmetest/status/pfsense.svg)](https://github.com/acmesh-official/acmetest#here-are-the-latest-status)|pfsense
-|6|[![](https://acmesh-official.github.io/acmetest/status/openbsd.svg)](https://github.com/acmesh-official/acmetest#here-are-the-latest-status)|OpenBSD
-|7|[![](https://acmesh-official.github.io/acmetest/status/solaris.svg)](https://github.com/acmesh-official/acmetest#here-are-the-latest-status)|SunOS/Solaris
+|4|[![Solaris](https://github.com/acmesh-official/acme.sh/workflows/LetsEncrypt/badge.svg)](https://github.com/acmesh-official/acme.sh/actions?query=workflow%3ALetsEncrypt)|Solaris
+|5|[![Ubuntu](https://github.com/acmesh-official/acme.sh/workflows/LetsEncrypt/badge.svg)](https://github.com/acmesh-official/acme.sh/actions?query=workflow%3ALetsEncrypt)| Ubuntu
+|6|[![](https://acmesh-official.github.io/acmetest/status/pfsense.svg)](https://github.com/acmesh-official/acmetest#here-are-the-latest-status)|pfsense
+|7|[![](https://acmesh-official.github.io/acmetest/status/openbsd.svg)](https://github.com/acmesh-official/acmetest#here-are-the-latest-status)|OpenBSD
 |8|[![](https://acmesh-official.github.io/acmetest/status/debian-latest.svg)](https://github.com/acmesh-official/acmetest#here-are-the-latest-status)| Debian
 |9|[![](https://acmesh-official.github.io/acmetest/status/centos-latest.svg)](https://github.com/acmesh-official/acmetest#here-are-the-latest-status)|CentOS
 |10|[![](https://acmesh-official.github.io/acmetest/status/opensuse-leap-latest.svg)](https://github.com/acmesh-official/acmetest#here-are-the-latest-status)|openSUSE
@@ -89,6 +89,7 @@ https://github.com/acmesh-official/acmetest
 - [ZeroSSL.com CA](https://github.com/acmesh-official/acme.sh/wiki/ZeroSSL.com-CA)
 - [BuyPass.com CA](https://github.com/acmesh-official/acme.sh/wiki/BuyPass.com-CA)
 - [Pebble strict Mode](https://github.com/letsencrypt/pebble)
+- Any other [RFC8555](https://tools.ietf.org/html/rfc8555)-compliant CA
 
 # Supported modes
 
@@ -109,13 +110,13 @@ https://github.com/acmesh-official/acmetest
 Check this project: https://github.com/acmesh-official/get.acme.sh
 
 ```bash
-curl https://get.acme.sh | sh
+curl https://get.acme.sh | sh -s email=my@example.com
 ```
 
 Or:
 
 ```bash
-wget -O -  https://get.acme.sh | sh
+wget -O -  https://get.acme.sh | sh -s email=my@example.com
 ```
 
 
@@ -126,7 +127,7 @@ Clone this project and launch installation:
 ```bash
 git clone https://github.com/acmesh-official/acme.sh.git
 cd ./acme.sh
-./acme.sh --install
+./acme.sh --install -m my@example.com
 ```
 
 You `don't have to be root` then, although `it is recommended`.

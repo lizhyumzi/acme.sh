@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 
-VER=2.8.8
+VER=2.8.9
 
 PROJECT_NAME="acme.sh"
 
@@ -159,6 +159,8 @@ _ZEROSSL_WIKI="https://github.com/acmesh-official/acme.sh/wiki/ZeroSSL.com-CA"
 _SERVER_WIKI="https://github.com/acmesh-official/acme.sh/wiki/Server"
 
 _PREFERRED_CHAIN_WIKI="https://github.com/acmesh-official/acme.sh/wiki/Preferred-Chain"
+
+_DNSCHECK_WIKI="https://github.com/acmesh-official/acme.sh/wiki/dnscheck"
 
 _DNS_MANUAL_ERR="The dns manual mode can not renew automatically, you must issue it again manually. You'd better use the other modes instead."
 
@@ -1130,7 +1132,11 @@ _createkey() {
     fi
   else
     _debug "Using RSA: $length"
-    if _opkey="$(${ACME_OPENSSL_BIN:-openssl} genrsa "$length" 2>/dev/null)"; then
+    __traditional=""
+    if _contains "$(${ACME_OPENSSL_BIN:-openssl} help genrsa 2>&1)" "-traditional"; then
+      __traditional="-traditional"
+    fi
+    if _opkey="$(${ACME_OPENSSL_BIN:-openssl} genrsa $__traditional "$length" 2>/dev/null)"; then
       echo "$_opkey" >"$f"
     else
       _err "error rsa key: $length"
@@ -1722,6 +1728,14 @@ _mktemp() {
   _err "Can not create temp file."
 }
 
+#clear all the https envs to cause _inithttp() to run next time.
+_resethttp() {
+  __HTTP_INITIALIZED=""
+  _ACME_CURL=""
+  _ACME_WGET=""
+  ACME_HTTP_NO_REDIRECTS=""
+}
+
 _inithttp() {
 
   if [ -z "$HTTP_HEADER" ] || ! touch "$HTTP_HEADER"; then
@@ -1737,7 +1751,10 @@ _inithttp() {
   fi
 
   if [ -z "$_ACME_CURL" ] && _exists "curl"; then
-    _ACME_CURL="curl -L --silent --dump-header $HTTP_HEADER "
+    _ACME_CURL="curl --silent --dump-header $HTTP_HEADER "
+    if [ -z "$ACME_HTTP_NO_REDIRECTS" ]; then
+      _ACME_CURL="$_ACME_CURL -L "
+    fi
     if [ "$DEBUG" ] && [ "$DEBUG" -ge "2" ]; then
       _CURL_DUMP="$(_mktemp)"
       _ACME_CURL="$_ACME_CURL --trace-ascii $_CURL_DUMP "
@@ -1756,6 +1773,9 @@ _inithttp() {
 
   if [ -z "$_ACME_WGET" ] && _exists "wget"; then
     _ACME_WGET="wget -q"
+    if [ "$ACME_HTTP_NO_REDIRECTS" ]; then
+      _ACME_WGET="$_ACME_WGET --max-redirect 0 "
+    fi
     if [ "$DEBUG" ] && [ "$DEBUG" -ge "2" ]; then
       _ACME_WGET="$_ACME_WGET -d "
     fi
@@ -2086,7 +2106,7 @@ _send_signed_request() {
 
     _debug2 original "$response"
     if echo "$responseHeaders" | grep -i "Content-Type: *application/json" >/dev/null 2>&1; then
-      response="$(echo "$response" | _normalizeJson | _json_decode)"
+      response="$(echo "$response" | _json_decode | _normalizeJson)"
     fi
     _debug2 response "$response"
 
@@ -2261,6 +2281,13 @@ _readaccountconf_mutable() {
 #_clearaccountconf   key
 _clearaccountconf() {
   _clear_conf "$ACCOUNT_CONF_PATH" "$1"
+}
+
+#key
+_clearaccountconf_mutable() {
+  _clearaccountconf "SAVED_$1"
+  #remove later
+  _clearaccountconf "$1"
 }
 
 #_savecaconf  key  value
@@ -3944,6 +3971,8 @@ _check_dns_entries() {
   _end_time="$(_math "$_end_time" + 1200)" #let's check no more than 20 minutes.
 
   while [ "$(_time)" -le "$_end_time" ]; do
+    _info "You can use '--dnssleep' to disable public dns checks."
+    _info "See: $_DNSCHECK_WIKI"
     _left=""
     for entry in $dns_entries; do
       d=$(_getfield "$entry" 1)
@@ -3991,12 +4020,42 @@ _check_dns_entries() {
 }
 
 #file
-_get_cert_issuers() {
+_get_chain_issuers() {
   _cfile="$1"
-  if _contains "$(${ACME_OPENSSL_BIN:-openssl} help crl2pkcs7 2>&1)" "Usage: crl2pkcs7"; then
-    ${ACME_OPENSSL_BIN:-openssl} crl2pkcs7 -nocrl -certfile $_cfile | ${ACME_OPENSSL_BIN:-openssl} pkcs7 -print_certs -text -noout | grep 'Issuer:' | _egrep_o "CN *=[^,]*" | cut -d = -f 2
+  if _contains "$(${ACME_OPENSSL_BIN:-openssl} help crl2pkcs7 2>&1)" "Usage: crl2pkcs7" || _contains "$(${ACME_OPENSSL_BIN:-openssl} crl2pkcs7 -help 2>&1)" "Usage: crl2pkcs7" || _contains "$(${ACME_OPENSSL_BIN:-openssl} crl2pkcs7 help 2>&1)" "unknown option help"; then
+    ${ACME_OPENSSL_BIN:-openssl} crl2pkcs7 -nocrl -certfile $_cfile | ${ACME_OPENSSL_BIN:-openssl} pkcs7 -print_certs -text -noout | grep -i 'Issuer:' | _egrep_o "CN *=[^,]*" | cut -d = -f 2
   else
-    ${ACME_OPENSSL_BIN:-openssl} x509 -in $_cfile -text -noout | grep 'Issuer:' | _egrep_o "CN *=[^,]*" | cut -d = -f 2
+    _cindex=1
+    for _startn in $(grep -n -- "$BEGIN_CERT" "$_cfile" | cut -d : -f 1); do
+      _endn="$(grep -n -- "$END_CERT" "$_cfile" | cut -d : -f 1 | _head_n $_cindex | _tail_n 1)"
+      _debug2 "_startn" "$_startn"
+      _debug2 "_endn" "$_endn"
+      if [ "$DEBUG" ]; then
+        _debug2 "cert$_cindex" "$(sed -n "$_startn,${_endn}p" "$_cfile")"
+      fi
+      sed -n "$_startn,${_endn}p" "$_cfile" | ${ACME_OPENSSL_BIN:-openssl} x509 -text -noout | grep 'Issuer:' | _egrep_o "CN *=[^,]*" | cut -d = -f 2 | sed "s/ *\(.*\)/\1/"
+      _cindex=$(_math $_cindex + 1)
+    done
+  fi
+}
+
+#
+_get_chain_subjects() {
+  _cfile="$1"
+  if _contains "$(${ACME_OPENSSL_BIN:-openssl} help crl2pkcs7 2>&1)" "Usage: crl2pkcs7" || _contains "$(${ACME_OPENSSL_BIN:-openssl} crl2pkcs7 -help 2>&1)" "Usage: crl2pkcs7" || _contains "$(${ACME_OPENSSL_BIN:-openssl} crl2pkcs7 help 2>&1)" "unknown option help"; then
+    ${ACME_OPENSSL_BIN:-openssl} crl2pkcs7 -nocrl -certfile $_cfile | ${ACME_OPENSSL_BIN:-openssl} pkcs7 -print_certs -text -noout | grep -i 'Subject:' | _egrep_o "CN *=[^,]*" | cut -d = -f 2
+  else
+    _cindex=1
+    for _startn in $(grep -n -- "$BEGIN_CERT" "$_cfile" | cut -d : -f 1); do
+      _endn="$(grep -n -- "$END_CERT" "$_cfile" | cut -d : -f 1 | _head_n $_cindex | _tail_n 1)"
+      _debug2 "_startn" "$_startn"
+      _debug2 "_endn" "$_endn"
+      if [ "$DEBUG" ]; then
+        _debug2 "cert$_cindex" "$(sed -n "$_startn,${_endn}p" "$_cfile")"
+      fi
+      sed -n "$_startn,${_endn}p" "$_cfile" | ${ACME_OPENSSL_BIN:-openssl} x509 -text -noout | grep -i 'Subject:' | _egrep_o "CN *=[^,]*" | cut -d = -f 2 | sed "s/ *\(.*\)/\1/"
+      _cindex=$(_math $_cindex + 1)
+    done
   fi
 }
 
@@ -4004,14 +4063,12 @@ _get_cert_issuers() {
 _match_issuer() {
   _cfile="$1"
   _missuer="$2"
-  _fissuers="$(_get_cert_issuers $_cfile)"
+  _fissuers="$(_get_chain_issuers $_cfile)"
   _debug2 _fissuers "$_fissuers"
-  if _contains "$_fissuers" "$_missuer"; then
-    return 0
-  fi
-  _fissuers="$(echo "$_fissuers" | _lower_case)"
+  _rootissuer="$(echo "$_fissuers" | _lower_case | _tail_n 1)"
+  _debug2 _rootissuer "$_rootissuer"
   _missuer="$(echo "$_missuer" | _lower_case)"
-  _contains "$_fissuers" "$_missuer"
+  _contains "$_rootissuer" "$_missuer"
 }
 
 #webroot, domain domainlist  keylength
@@ -4785,6 +4842,9 @@ $_authorizations_map"
     _split_cert_chain "$CERT_PATH" "$CERT_FULLCHAIN_PATH" "$CA_CERT_PATH"
 
     if [ "$_preferred_chain" ] && [ -f "$CERT_FULLCHAIN_PATH" ]; then
+      if [ "$DEBUG" ]; then
+        _debug "default chain issuers: " "$(_get_chain_issuers "$CERT_FULLCHAIN_PATH")"
+      fi
       if ! _match_issuer "$CERT_FULLCHAIN_PATH" "$_preferred_chain"; then
         rels="$(echo "$responseHeaders" | tr -d ' <>' | grep -i "^link:" | grep -i 'rel="alternate"' | cut -d : -f 2- | cut -d ';' -f 1)"
         _debug2 "rels" "$rels"
@@ -4800,13 +4860,22 @@ $_authorizations_map"
           _relca="$CA_CERT_PATH.alt"
           echo "$response" >"$_relcert"
           _split_cert_chain "$_relcert" "$_relfullchain" "$_relca"
+          if [ "$DEBUG" ]; then
+            _debug "rel chain issuers: " "$(_get_chain_issuers "$_relfullchain")"
+          fi
           if _match_issuer "$_relfullchain" "$_preferred_chain"; then
             _info "Matched issuer in: $rel"
             cat $_relcert >"$CERT_PATH"
             cat $_relfullchain >"$CERT_FULLCHAIN_PATH"
             cat $_relca >"$CA_CERT_PATH"
+            rm -f "$_relcert"
+            rm -f "$_relfullchain"
+            rm -f "$_relca"
             break
           fi
+          rm -f "$_relcert"
+          rm -f "$_relfullchain"
+          rm -f "$_relca"
         done
       fi
     fi
@@ -5823,7 +5892,7 @@ _deactivate() {
     _URL_NAME="uri"
   fi
 
-  entries="$(echo "$response" | _egrep_o "[^{]*\"type\":\"[^\"]*\", *\"status\": *\"valid\", *\"$_URL_NAME\"[^}]*")"
+  entries="$(echo "$response" | tr '][' '==' | _egrep_o "challenges\": *=[^=]*=" | tr '}{' '\n' | grep "\"status\": *\"valid\"")"
   if [ -z "$entries" ]; then
     _info "No valid entries found."
     if [ -z "$thumbprint" ]; then
@@ -5866,7 +5935,7 @@ _deactivate() {
     _debug _vtype "$_vtype"
     _info "Found $_vtype"
 
-    uri="$(echo "$entry" | _egrep_o "\"$_URL_NAME\":\"[^\"]*" | cut -d : -f 2,3 | tr -d '"')"
+    uri="$(echo "$entry" | _egrep_o "\"$_URL_NAME\":\"[^\"]*\"" | tr -d '" ' | cut -d : -f 2-)"
     _debug uri "$uri"
 
     if [ "$_d_type" ] && [ "$_d_type" != "$_vtype" ]; then
@@ -6087,7 +6156,7 @@ _installalias() {
 
 }
 
-# nocron confighome noprofile
+# nocron confighome noprofile accountemail
 install() {
 
   if [ -z "$LE_WORKING_DIR" ]; then
@@ -6097,6 +6166,8 @@ install() {
   _nocron="$1"
   _c_home="$2"
   _noprofile="$3"
+  _accountemail="$4"
+
   if ! _initpath; then
     _err "Install failed."
     return 1
@@ -6213,6 +6284,10 @@ install() {
         fi
       done
     fi
+  fi
+
+  if [ "$_accountemail" ]; then
+    _saveaccountconf "ACCOUNT_EMAIL" "$_accountemail"
   fi
 
   _info OK
@@ -6493,7 +6568,7 @@ Parameters:
   --cert-home <directory>           Specifies the home dir to save all the certs, only valid for '--install' command.
   --config-home <directory>         Specifies the home dir to save all the configurations.
   --useragent <string>              Specifies the user agent string. it will be saved for future use too.
-  -m, --accountemail <email>        Specifies the account email, only valid for the '--install' and '--update-account' command.
+  -m, --email <email>               Specifies the account email, only valid for the '--install' and '--update-account' command.
   --accountkey <file>               Specifies the account key path, only valid for the '--install' command.
   --days <ndays>                    Specifies the days to renew the cert when using '--issue' command. The default value is $DEFAULT_RENEW days.
   --httpport <port>                 Specifies the standalone listening port. Only valid if the server is behind a reverse proxy or load balancer.
@@ -6504,9 +6579,9 @@ Parameters:
   --insecure                        Do not check the server certificate, in some devices, the api server's certificate may not be trusted.
   --ca-bundle <file>                Specifies the path to the CA certificate bundle to verify api server's certificate.
   --ca-path <directory>             Specifies directory containing CA certificates in PEM format, used by wget or curl.
-  --nocron                          Only valid for '--install' command, which means: do not install the default cron job.
+  --no-cron                         Only valid for '--install' command, which means: do not install the default cron job.
                                     In this case, the certs will not be renewed automatically.
-  --noprofile                       Only valid for '--install' command, which means: do not install aliases to user profile.
+  --no-profile                      Only valid for '--install' command, which means: do not install aliases to user profile.
   --no-color                        Do not output color text.
   --force-color                     Force output of color text. Useful for non-interactive use with the aha tool for HTML E-Mails.
   --ecc                             Specifies to use the ECC cert. Valid for '--install-cert', '--renew', '--revoke', '--to-pkcs12' and '--create-csr'
@@ -6544,18 +6619,17 @@ Parameters:
 "
 }
 
-# nocron noprofile
-_installOnline() {
+installOnline() {
   _info "Installing from online archive."
-  _nocron="$1"
-  _noprofile="$2"
-  if [ ! "$BRANCH" ]; then
-    BRANCH="master"
+
+  _branch="$BRANCH"
+  if [ -z "$_branch" ]; then
+    _branch="master"
   fi
 
-  target="$PROJECT/archive/$BRANCH.tar.gz"
+  target="$PROJECT/archive/$_branch.tar.gz"
   _info "Downloading $target"
-  localname="$BRANCH.tar.gz"
+  localname="$_branch.tar.gz"
   if ! _get "$target" >$localname; then
     _err "Download error."
     return 1
@@ -6567,9 +6641,9 @@ _installOnline() {
       exit 1
     fi
 
-    cd "$PROJECT_NAME-$BRANCH"
+    cd "$PROJECT_NAME-$_branch"
     chmod +x $PROJECT_ENTRY
-    if ./$PROJECT_ENTRY install "$_nocron" "" "$_noprofile"; then
+    if ./$PROJECT_ENTRY --install "$@"; then
       _info "Install success!"
       _initpath
       _saveaccountconf "UPGRADE_HASH" "$(_getUpgradeHash)"
@@ -6577,7 +6651,7 @@ _installOnline() {
 
     cd ..
 
-    rm -rf "$PROJECT_NAME-$BRANCH"
+    rm -rf "$PROJECT_NAME-$_branch"
     rm -f "$localname"
   )
 }
@@ -6605,7 +6679,7 @@ upgrade() {
     [ -z "$FORCE" ] && [ "$(_getUpgradeHash)" = "$(_readaccountconf "UPGRADE_HASH")" ] && _info "Already uptodate!" && exit 0
     export LE_WORKING_DIR
     cd "$LE_WORKING_DIR"
-    _installOnline "nocron" "noprofile"
+    installOnline "--nocron" "--noprofile"
   ); then
     _info "Upgrade success!"
     exit 0
@@ -6649,8 +6723,8 @@ _checkSudo() {
       return 0
     fi
     if [ -n "$SUDO_COMMAND" ]; then
-      #it's a normal user doing "sudo su", or `sudo -i` or `sudo -s`
-      _endswith "$SUDO_COMMAND" /bin/su || grep "^$SUDO_COMMAND\$" /etc/shells >/dev/null 2>&1
+      #it's a normal user doing "sudo su", or `sudo -i` or `sudo -s`, or `sudo su acmeuser1`
+      _endswith "$SUDO_COMMAND" /bin/su || _contains "$SUDO_COMMAND" "/bin/su " || grep "^$SUDO_COMMAND\$" /etc/shells >/dev/null 2>&1
       return $?
     fi
     #otherwise
@@ -6784,6 +6858,11 @@ _process() {
       ;;
     --install)
       _CMD="install"
+      ;;
+    --install-online)
+      shift
+      installOnline "$@"
+      return
       ;;
     --uninstall)
       _CMD="uninstall"
@@ -7059,9 +7138,9 @@ _process() {
       USER_AGENT="$_useragent"
       shift
       ;;
-    -m | --accountemail)
+    -m | --email | --accountemail)
       _accountemail="$2"
-      ACCOUNT_EMAIL="$_accountemail"
+      export ACCOUNT_EMAIL="$_accountemail"
       shift
       ;;
     --accountkey)
@@ -7104,10 +7183,10 @@ _process() {
       CA_PATH="$_ca_path"
       shift
       ;;
-    --nocron)
+    --no-cron | --nocron)
       _nocron="1"
       ;;
-    --noprofile)
+    --no-profile | --noprofile)
       _noprofile="1"
       ;;
     --no-color)
@@ -7327,7 +7406,7 @@ _process() {
   fi
   _debug "Running cmd: ${_CMD}"
   case "${_CMD}" in
-  install) install "$_nocron" "$_confighome" "$_noprofile" ;;
+  install) install "$_nocron" "$_confighome" "$_noprofile" "$_accountemail" ;;
   uninstall) uninstall "$_nocron" ;;
   upgrade) upgrade ;;
   issue)
@@ -7439,12 +7518,6 @@ _process() {
   fi
 
 }
-
-if [ "$INSTALLONLINE" ]; then
-  INSTALLONLINE=""
-  _installOnline
-  exit
-fi
 
 main() {
   [ -z "$1" ] && showhelp && return
